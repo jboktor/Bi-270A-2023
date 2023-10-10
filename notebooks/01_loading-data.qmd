@@ -1,0 +1,211 @@
+---
+title: "Loading Metagenomic Data from MGnify"
+editor: visual
+author: "Joe Boktor"
+date: '2023-10-06'
+format: 
+  html:
+    eval: false
+    font-family: helvetica neue
+    page-layout: full
+    toc: true
+    toc-location: left
+    toc-depth: 5
+    self-contained: true
+    code-fold: true
+    code-tools: true
+    fig-align: center
+    grid:
+      sidebar-width: 200px
+      body-width: 1100px
+      margin-width: 200px
+      gutter-width: 1.5em
+---
+
+```{r, eval=FALSE}
+
+# You only need to run this section to install these packages once.
+# note: respond no to installing packages from source that need complication
+
+# install missing CRAN packages
+cran_packages <-
+  c("rmarkdown",
+    "tidyverse",
+    "tidyjson",
+    "future",
+    "furrr",
+    "data.table",
+    "vegan",
+    "devtools",
+    "BiocManager",
+    "glue",
+    "DT"
+    )
+
+missing_cran_packages <-
+  cran_packages[!(cran_packages %in% installed.packages()[, "Package"])]
+
+if (length(missing_cran_packages)) {
+  install.packages(missing_cran_packages)
+}
+
+# installing missing Bioconductor specific packages
+bioc_packages <- c(
+ "phyloseq",
+ "microbiome",
+ "pathview",
+ "KEGGREST"
+)
+missing_bioc_packages <-
+  bioc_packages[!(bioc_packages %in% installed.packages()[, "Package"])]
+
+if (length(missing_bioc_packages)) {
+  BiocManager::install(missing_bioc_packages)
+}
+
+# Installing other misc packages available via github
+if (!require(MGnifyR)){
+  devtools::install_github("beadyallen/MGnifyR")
+}
+
+```
+
+Load libraries into environment
+
+```{r}
+
+suppressMessages({
+  library(tidyverse)
+  library(tidyjson)
+  library(future)
+  library(furrr)
+  library(data.table)
+  library(KEGGREST)
+  library(pathview)
+  library(glue)
+  library(vegan)
+  library(phyloseq)
+  library(MGnifyR)
+  library(DT)
+  })
+
+# set the working directory as the path of this project folder (not the notebook subfolder)
+wkdir <- "/Users/josephboktor/Documents/analyses/Bi270A_Metagenomics_Tutorials"
+```
+
+Setup MGnify Client and point to a cache dir of your choosing
+
+```{r, eval=FALSE}
+
+mg <-mgnify_client(
+    usecache = T, 
+    cache_dir = glue("{wkdir}/.mgnify_cache")
+    )
+
+```
+
+### Step 1. Locate your MGnify Study Accession(s)
+
+For example, [this](https://www.ebi.ac.uk/metagenomics/studies/MGYS00006078#overview) dataset is associated with the study accession: **MGYS00006078,** which is made visible at the top of the page. The variable set below can be a character or a list of characters (multiple study accessions you may want to jointly analyze).
+
+```{r}
+# This variable can be a single 
+mgnify_study_accession <- "MGYS00006078"
+
+```
+
+### Step 2. Using the Study Accession(s), fetch a list of Analysis IDs.
+
+Note that each sample within this study should be associated with a separate analysis id. To successfully pull down an analysis of interest, these ids are required and may be collected with the below command.
+
+```{r}
+analyses_accessions <- mgnify_analyses_from_studies(mg, mgnify_study_accession)
+analyses_accessions
+```
+
+### Step 3. Download metadata for your samples of interest.
+
+```{r}
+analyses_metadata_df <- mgnify_get_analyses_metadata(mg, analyses_accessions)
+```
+
+Examine the metadata.
+
+```{r}
+analyses_metadata_df %>% DT::datatable(options = list(scrollX = TRUE))
+```
+
+### Step 4. Using the Analysis Acession IDs, Download Taxonomic Profiles as [phyloseq](https://joey711.github.io/phyloseq/) objects.
+
+> The phyloseq package is a tool to import, store, analyze, and graphically display complex phylogenetic sequencing, especially when there is associated sample data and/or a phylogenetic tree.
+
+```{r}
+# tax_SU indicates the rRNA subunit to select Small subunit (SSU) or Large subunit (LSU). In most cases, SSU is more appropriate, as it provides better annotation coverage.
+
+ps <- mgnify_get_analyses_phyloseq(
+  mg, analyses_metadata_df$analysis_accession, 
+  tax_SU = "SSU"
+  )
+
+# save phyloseq object
+saveRDS(
+  ps,
+  glue("{wkdir}/data/interim/{Sys.Date()}_phyloseq.rds")
+)
+
+```
+
+### Step 5. Using the Analysis Acession IDs, Download KEGG Ortholog and KEGG Module profiles.
+
+```{r}
+future::plan("multisession", workers = 6)
+
+ko_data =
+  analyses_metadata_df$analysis_accession %>% 
+  purrr::set_names() %>% 
+  furrr::future_map( ~ paste0('analyses/', .,'/kegg-orthologs') %>% 
+                       mgnify_retrieve_json(mg, path = .) %>% 
+                       spread_all() %>% 
+                       as.data.frame() %>% 
+                       dplyr::select(attributes.accession, attributes.count, attributes.description)
+                       ) %>% 
+  bind_rows(.id = "analysis_accession")
+
+ko_data %>% 
+  head(100) %>% 
+  DT::datatable(options = list(scrollX = TRUE))
+
+# save KEGG Otholog Data
+saveRDS(
+  ko_data,
+  glue("{wkdir}/data/interim/{Sys.Date()}_KO-datatable.rds")
+)
+
+```
+
+```{r}
+km_data =
+  analyses_metadata_df$analysis_accession %>% 
+  purrr::set_names() %>% 
+  furrr::future_map( ~ paste0('analyses/', .,'/kegg-modules') %>% 
+                       mgnify_retrieve_json(mg, path = .) %>% 
+                       spread_all() %>% 
+                       as.data.frame()
+                       ) %>% 
+  bind_rows(.id = "analysis_accession")
+
+km_data %>% 
+  head(100) %>% 
+  DT::datatable(options = list(scrollX = TRUE))
+
+# save KEGG Module Data
+saveRDS(
+  km_data,
+  glue("{wkdir}/data/interim/{Sys.Date()}_KM-datatable.rds")
+)
+
+```
+
+```{r}
+sessionInfo()
+```
