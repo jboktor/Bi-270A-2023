@@ -1,0 +1,263 @@
+---
+title: "Taxonomic Data QC"
+editor: visual
+author: "Joe Boktor"
+date: '2023-10-06'
+format: 
+  html:
+    font-family: helvetica neue
+    page-layout: full
+    toc: true
+    toc-location: left
+    toc-depth: 5
+    self-contained: true
+    code-fold: true
+    code-tools: true
+    fig-align: center
+    grid:
+      sidebar-width: 200px
+      body-width: 1100px
+      margin-width: 200px
+      gutter-width: 1.5em
+---
+
+## Helpful Resources:
+
+-   [phyloseq docs](https://joey711.github.io/phyloseq/preprocess.html)
+
+-   [microbiome docs](https://microbiome.github.io/tutorials/cleaning_taxonomy_table.html)
+
+-   [microbiomeutilties docs](https://microsud.github.io/microbiomeutilities/articles/microbiomeutilities.html)
+
+## Data Quality Control
+
+This notebook displays some common data quality control methods and visualizations.
+
+```{r}
+#| warning: false
+#| message: false
+
+cran_packages <-
+  c("strex",
+    "knitr")
+
+missing_cran_packages <-
+  cran_packages[!(cran_packages %in% installed.packages()[, "Package"])]
+
+if (length(missing_cran_packages)) {
+  install.packages(missing_cran_packages)
+}
+
+# Installing other misc packages available via github
+if (!require(microbiomeutilities)){
+  devtools::install_github("microsud/microbiomeutilities")
+}
+
+suppressMessages({
+  library(tidyverse)
+  library(future)
+  library(furrr)
+  library(data.table)
+  library(KEGGREST)
+  library(pathview)
+  library(glue)
+  library(vegan)
+  library(phyloseq)
+  library(MGnifyR)
+  library(DT)
+  library(microbiome)
+  library(microbiomeutilities)
+  library(strex)
+  library(ggrepel)
+  })
+
+# set the working directory as the path of this project folder (not the notebook subfolder)
+wkdir <- "/Users/josephboktor/Documents/analyses/Bi270A_Metagenomics_Tutorials"
+```
+
+Loading in your previously saved phyloseq object from notebook 01
+
+```{r}
+ps <- readRDS(
+  glue("{wkdir}/data/interim/2023-10-09_phyloseq.rds")
+)
+```
+
+### Intro to phyloseq object manipulation
+
+Pulling metadata from a phyloseq object
+
+```{r}
+metadata_df <- microbiome::meta(ps)
+metadata_df %>% glimpse()
+
+```
+
+Pulling OTU abundance count profiles
+
+```{r}
+otu_df <- microbiome::abundances(ps)
+otu_df %>% DT::datatable(options = list(scrollX = TRUE))
+```
+
+Viewing your taxonomic rank annotations. Analysis of SSU regions of taxa will lead to variable precision in taxonomic annotation. Some sequences will provide species/strain level clarity while others may only provide sufficient resolution to determine the Phylum of the taxa.
+
+```{r}
+ps %>% 
+  tax_table() %>% 
+  DT::datatable(options = list(scrollX = TRUE))
+
+```
+
+Filtering a phyloseq object by available metadata
+
+```{r}
+# filtering character columns by exact match
+subset_samples(ps, assembly_accession = ERZ4883048)
+
+# filtering character columns by string matching / regex
+subset_samples(ps, grepl("Ranger Classic", sample_sample.name))
+
+# filtering numeric values
+subset_samples(ps, analysis_Nucleotide.sequences.after.length.filtering > 175000)
+
+# filtering phyloseq object by a mix of logical conditions
+subset_samples(
+  ps,
+  grepl("Ranger Classic", sample_sample.name) &
+    analysis_Nucleotide.sequences.after.length.filtering > 175000
+)
+
+```
+
+### Formatting your phyloseq metadta
+
+Adding / Editing metadata
+
+```{r}
+# In this example set, we see that the sample names contain some useful group descriptive metadata. It would be very helpful to have this information in separate columns to make subsetting our data easier in the future. 
+
+# using the convient strex package, we will partition these descriptions into different column vectors
+sample_data(ps)$group <- metadata_df$sample_sample.name %>% strex::str_after_first(": ")
+sample_data(ps)$breed <- sample_data(ps)$group %>% strex::str_before_first(",")
+sample_data(ps)$diet <- sample_data(ps)$group %>% strex::str_after_first(", ")
+
+ps %>% meta() %>% 
+  select(sample_sample.name, group, breed, diet) %>% 
+  DT::datatable(options = list(scrollX = TRUE))
+
+```
+
+Reformatting your taxonomy labels.
+
+```{r}
+# How taxa are currently named in our phyloseq object
+head(taxa(ps))
+
+# reformatting to view the best level of resolution provided by annonation
+ps <- microbiomeutilities::format_to_besthit(ps)
+head(taxa(ps))
+
+```
+
+### Exploring your data
+
+Visualizing read quality summary stats
+
+```{r}
+microbiomeutilities::plot_read_distribution(
+  ps, groups = "group", plot.type = "density"
+  ) + 
+  theme_biome_utils()
+
+```
+
+Visualizing prevalence / abundance relationship
+
+```{r}
+
+set.seed(42)
+# this command is described in more detail below
+asv_ps <- microbiome::transform(ps, "compositional")
+p_abund_vs_prev <- plot_abund_prev(
+  asv_ps,
+  label.core = TRUE,
+  color = "blue",
+  mean.abund.thres = 0.01,
+  mean.prev.thres = 0.99,
+  dot.opacity = 0.7,
+  label.size = 4,
+  label.opacity = 1.0,
+  nudge.label = -0.15,
+  bs.iter = 99,
+  size = nsamples(asv_ps),
+  replace = TRUE,
+  label.color = "black"
+) +
+  geom_vline(xintercept = 0.95, lty = "dashed", alpha = 0.7) +
+  geom_hline(yintercept = 0.01, lty = "dashed", alpha = 0.7)
+
+p_abund_vs_prev
+
+```
+
+### Filtering a phyloseq object to remove low-count / unreliable taxa counts
+
+The `microbiome::core()` function enables filtering of phyloseq objects by abundance &/or prevalence thresholds. Setting a detection value tells the function to filter for samples where abundance of a microbe is at least N counts, (ie, 10). The prevalence value defines a threshold for the percentage of samples in your dataset ( with at least N counts of a taxa) for it to remain in the dataset. This allows you to remove rare/sparsily detected taxa from downstream analysis that may be sensitive to noise.
+
+```{r}
+ps
+# filtering for taxa that are present in at least 2/24 samples
+# here we can see that we go from 111 to 64 OTUs
+ps_qc <- core(ps, detection = 0, prevalence = 2/24)
+ps_qc
+
+```
+
+### Normalization / Transformation
+
+1.  **Normalization by Relative Abundance or Total Sum Scaling (TSS) This approach normalizes cells as the fractional abundance over the count total of a sample.**
+
+```{r}
+
+ps %>% abundances() %>% colSums() %>% head
+
+ps_relab <- microbiome::transform(ps, "compositional")
+
+ps_relab %>% abundances() %>% colSums() %>% head
+```
+
+2.  **Normalization by Center-log-Ratio (CLR)**
+
+This approach is advantageous for microbiome data for several reasons, some of which include:
+
+-   Addressing the compositional nature of the data
+
+-   False Positive Control
+
+-   Linear Model Compatibility
+
+-   Interpretability
+
+The formula for CLR transformation is given by:
+
+$$
+CLR(x) = \left[ \log\left(\frac{x_1}{g(x)}\right), \log\left(\frac{x_2}{g(x)}\right), \ldots, \log\left(\frac{x_D}{g(x)}\right) \right]
+$$
+
+Where $x=[x_1, x_2,...x_D]$ is the original compositional data and $g(x)$ is the geometric mean of $x$, defined as:
+
+$$
+g(x) = \left( \prod_{i=1}^{D} x_i \right)^{1/D}
+$$
+
+```{r}
+
+ps_clr <- microbiome::transform(ps, "clr")
+ps_clr %>% abundances() %>% colSums() %>% head
+
+```
+
+```{r}
+sessionInfo()
+```
