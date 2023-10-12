@@ -73,7 +73,6 @@ if (!require(MGnifyR)){
 Load libraries into environment
 
 ```{r}
-
 suppressMessages({
   library(tidyverse)
   library(tidyjson)
