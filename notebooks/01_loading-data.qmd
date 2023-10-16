@@ -65,7 +65,7 @@ if (length(missing_bioc_packages)) {
 
 # Installing other misc packages available via github
 if (!require(MGnifyR)){
-  devtools::install_github("beadyallen/MGnifyR")
+  devtools::install_github("beadyallen/MGnifyR@d1baca93465f8c97101049bd66b63a8bb5a0d6ab")
 }
 
 ```
