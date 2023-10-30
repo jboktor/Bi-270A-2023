@@ -39,7 +39,8 @@ This notebook displays some common data quality control methods and visualizatio
 
 cran_packages <-
   c("strex",
-    "knitr")
+    "knitr", 
+    "ggrepel")
 
 missing_cran_packages <-
   cran_packages[!(cran_packages %in% installed.packages()[, "Package"])]
@@ -141,6 +142,12 @@ Adding / Editing metadata
 sample_data(ps)$group <- metadata_df$sample_sample.name %>% strex::str_after_first(": ")
 sample_data(ps)$breed <- sample_data(ps)$group %>% strex::str_before_first(",")
 sample_data(ps)$diet <- sample_data(ps)$group %>% strex::str_after_first(", ")
+
+# save phyloseq object
+saveRDS(
+  ps,
+  glue("{wkdir}/data/interim/{Sys.Date()}_phyloseq_meta-edited.rds")
+)
 
 ps %>% meta() %>% 
   select(sample_sample.name, group, breed, diet) %>% 
