@@ -1,0 +1,406 @@
+---
+title: "Community Composition & Comparative Metagenomic Analyses Examples"
+editor: visual
+author: "Joe Boktor"
+date: '2023-10-25'
+format: 
+  html:
+    eval: true
+    font-family: helvetica neue
+    page-layout: full
+    toc: true
+    toc-location: left
+    toc-depth: 5
+    self-contained: true
+    code-fold: true
+    code-tools: true
+    fig-align: center
+    grid:
+      sidebar-width: 200px
+      body-width: 1100px
+      margin-width: 200px
+      gutter-width: 1.5em
+---
+
+Load libraries into environment
+
+```{r}
+#| warning: false
+#| message: false
+
+cran_packages <-
+  c("vegan",
+    "usedist"
+    )
+
+missing_cran_packages <-
+  cran_packages[!(cran_packages %in% installed.packages()[, "Package"])]
+
+if (length(missing_cran_packages)) {
+  install.packages(missing_cran_packages)
+}
+
+# installing missing Bioconductor specific packages
+bioc_packages <- c(
+ "microbiomeMarker",
+ "SIAMCAT"
+)
+missing_bioc_packages <-
+  bioc_packages[!(bioc_packages %in% installed.packages()[, "Package"])]
+
+if (length(missing_bioc_packages)) {
+  BiocManager::install(missing_bioc_packages)
+}
+
+suppressMessages({
+  library(tidyverse)
+  library(future)
+  library(furrr)
+  library(data.table)
+  library(KEGGREST)
+  library(pathview)
+  library(glue)
+  library(vegan)
+  library(phyloseq)
+  library(MGnifyR)
+  library(DT)
+  library(microbiome)
+  library(microbiomeutilities)
+  library(microbiomeMarker)
+  library(strex)
+  library(ggrepel)
+  library(vegan)
+  library(SIAMCAT)
+  library(usedist)
+  })
+
+# set the working directory as the path of this project folder (not the notebook subfolder)
+wkdir <- "/Users/josephboktor/Documents/analyses/Bi270A_Metagenomics_Tutorials"
+source(glue("{wkdir}/notebooks/kegg_pathways_utils.R"))
+```
+
+Loading phyloseq object into environment and trimming low abundance taxa
+
+```{r}
+ps <- readRDS(
+  glue("{wkdir}/data/interim/2023-10-25_phyloseq_meta-edited.rds")
+)
+
+```
+
+### 1. Alpha-Diversity
+
+Alpha-diversity metrics quantify the ecological diversity within a single habitat or community. These metrics offer insights such as richness, evenness, and phylogenetic diversity that may be compared across samples and groups.
+
+Calculating alpha-diversity metrics.
+
+```{r}
+stats_alpha <- microbiome::alpha(ps, index = "all")
+stats_alpha %>% DT::datatable(options = list(scrollX = TRUE))
+
+```
+
+Visualizing results.
+
+```{r}
+
+# merging metadata with alpha metrics 
+meta_df <- microbiome::meta(ps)
+plot_df_alpha <- cbind(stats_alpha, microbiome::meta(ps))
+
+plot_df_alpha %>% 
+  ggplot(aes(y=observed, x=diet)) +
+  geom_boxplot(alpha = 0.5, outlier.alpha = 0) +
+  geom_point(
+    aes(fill=breed),
+    size = 3, 
+    alpha = 0.8,
+    shape = 21,
+    position = position_jitter(width = 0.2)
+    ) +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_brewer(palette = "Set1") +
+  labs(x = NULL, y = "Unique Taxa") +
+  theme_minimal()
+  
+
+
+```
+
+Next, you would typically proceed to perform some statistical analysis to quantify effect sizes, confidence intervals, and other parameters that are informative of covariate relevance.
+
+### 2. Beta-Diversity
+
+Beta-diversity measures the difference in species composition between different communities or habitats. This approach allows for the comparison of entire community profiles between samples, typically with some distance measure. Common distance metrics include the Aitchisons distance (Euclidean distance on CLR transfomred data), Bray-Curtis distance, Jaccard, Weighted and Unweightd Unifrac, see below for more info.
+
+#### Aitchison's Distance
+
+Aitchison's distance is commonly used for compositional data, where each element represents a proportion of a whole. This metric incorporates a log-ratio transformation to account for the compositional nature of the data.
+
+$$
+\text{Aitchison's Distance} = \sqrt{\sum_{i=1}^{D} \left( \ln \frac{a_i}{g(a)} - \ln \frac{b_i}{g(b)} \right)^2}
+$$
+
+Where $a_i$ and $b_i$ are the proportional abundances of species $i$ in two different communities, $D$ is the number of dimensions (species), and $g(x)$ is the geometric mean of the compositional vector $x$.
+
+#### **Bray-Curtis Dissimilarity**
+
+Bray-Curtis Dissimilarity accounts for the abundance of each species, measuring how dissimilar two communities are based on the counts of their constituent species.
+
+$$
+\text{Bray-Curtis} = 1 - \frac{2 \times \sum_{i=1}^{S} \min(a_i, b_i)}{\sum_{i=1}^{S} (a_i + b_i)} $$
+
+where $a_i$ and $b_i$ are the abundances of species $i$ in two different communities, and $S$ is the total number of species.
+
+#### Jaccard Similarity Index
+
+The Jaccard Similarity Index measures the similarity between two communities based solely on the presence or absence of species.
+
+$$
+\text{Jaccard} = \frac{\text{Number of shared species}}{\text{Total number of unique species in both communities}}
+$$
+
+#### UniFrac
+
+UniFrac is a phylogenetic distance metric that measures the dissimilarity between two communities by considering the evolutionary branches that are unique to each community.
+
+$$
+ \text{UniFrac} = \frac{\text{Sum of branch lengths unique to either community}}{\text{Total branch lengths}}
+$$
+
+#### Weighted UniFrac 
+
+Weighted UniFrac extends the UniFrac metric by incorporating the relative abundances of each species, thereby giving more weight to branches with more abundant species.
+
+$$
+\text{Weighted UniFrac} = \frac{\sum_{i=1}^{B} w_i \cdot | a_i - b_i |}{\sum_{i=1}^{B} w_i}
+$$
+
+where $w_i$ is the length of branch $i$ in the phylogenetic tree, and $a_i$ and $b_i$ are the relative abundances of the species corresponding to branch $i$ in the two communities. $B$ is the total number of branches.
+
+Here we demonstrate an example of calculating the Aitchison's distance using the `phyloseq::distance` function.
+
+```{r}
+# keep taxa that are present in at least two different samples in our sample set
+ps_qc <- core(ps, detection = 0, prevalence = 2/24)
+ps_qc
+# perform CLR transformation
+ps_qc_clr <- microbiome::transform(ps_qc, "clr")
+
+
+# obtaining a distance matrix using Aitchisons distance (Euclidean distance on CLR transformed vars)
+dist_matrix <- phyloseq::distance(ps_qc_clr, method = "euclidean")
+
+# formating matrix into a long-tidy data table
+dist_matrix %>%
+  as.matrix() %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "pair_1") %>% 
+  pivot_longer(!pair_1)
+
+```
+
+We aggregated distance values across pairs of samples of interest using our metadata and the `usedist::dist_groups` function.
+
+```{r}
+group_dist <- usedist::dist_groups(dist_matrix, meta_df$diet)
+
+group_dist %>% 
+  ggplot(aes(y=Label, x=Distance)) +
+  geom_boxplot(alpha = 0.5) +
+  geom_point(position = position_jitter(height = 0.2), alpha = 0.6) +
+  labs( x = "Aitchisons Distance", y = NULL) +
+  theme_minimal() 
+```
+
+These distance metrics may also be visualized in reduced dimensionality such as via Principle Coordinate Analysis (PCoA), tSNE, UMAP, etc.
+
+```{r}
+ord <- phyloseq::ordinate(ps_qc_clr, "MDS", "euclidean")
+plot_ordination(ps_qc_clr, ord, color = "group") +
+  theme_minimal() +
+  geom_point(size = 3)
+
+```
+
+### Association Testing (SIAMCAT)
+
+see [documentation](https://siamcat.embl.de)
+
+```{r}
+#| warning: false
+#| message: false
+
+data(siamcat_example)
+association.plot(siamcat_example)
+
+```
+
+also see MaAsLin2 [documentation](https://github.com/biobakery/Maaslin2)
+
+###  Gene-Profile Analyses \| Microbial Pathway Visualization
+
+Pathway Visualization (EMBL tutorial available through MGnify)
+
+```{r}
+
+# Loading in KO Data 
+ko_data <- readRDS(
+  glue("{wkdir}/data/interim/2023-10-09_KO-datatable.rds")
+)
+km_data <- readRDS(
+  glue("{wkdir}/data/interim/2023-10-09_KM-datatable.rds")
+)
+
+# renaming the attributes.counts column (important for later)
+ko_data <- dplyr::rename(ko_data, counts = attributes.count)
+
+# removing Modules with low completeness
+km_data <- km_data %>% 
+  filter(attributes.completeness > 95)
+modules <- unique(km_data$attributes.accession)
+modules
+
+```
+
+If there are custom pathway IDs you are interested in, enter them in the list below You can view these pathways here. Otherwise, the section below collects the most general and complete pathways.
+
+```{r}
+
+CUSTOM_PATHWAY_IDS <- list(
+  "00010",
+  "00020",
+  "00030",
+  "00061",
+  "01232",
+  "00240",
+  "00190"
+)
+
+
+paste(
+  "Using",
+  CUSTOM_PATHWAY_IDS,
+  " - ",
+  sapply(CUSTOM_PATHWAY_IDS, function(id)
+    paste(get_pathway_info(id)[1], " : ",
+          get_pathway_info(id)[2])),
+  "as a Custom Pathway"
+)
+
+
+```
+
+Function that collects KEGG pathways for a given list of IDs, excluding chemical structure & global maps
+
+```{r}
+
+collect_pathways <- function(ids_list) {
+    pathways = list()
+    for (id in ids_list) { 
+        current_pathway = as.list(keggLink("pathway", id))
+        for (index in grep("map", current_pathway)) {        
+            clean_id = gsub("*path:", "", current_pathway[index])
+            # Discarding chemical structure (map010XX), global (map011XX), and overview (map012XX) maps
+            prefix = substring(clean_id, 1, 6)
+            if(is.na(match("map010", prefix)) & is.na(match("map011", prefix)) & is.na(match("map012", prefix)) ){
+                pathways = append(pathways, clean_id)
+            }
+        }
+    }
+    return(pathways)
+}
+
+```
+
+Collecting Modules
+
+```{r}
+md_pathways = collect_pathways(modules)
+head(md_pathways)
+```
+
+```{r}
+# Counting the number of modules we have in each pathway
+our_pathways_counts = list()
+for (path_element in md_pathways) {
+    if (path_element %in% names(our_pathways_counts)) {
+        new_value = our_pathways_counts[[path_element]] + 1
+        our_pathways_counts[path_element] = new_value       
+    } else {
+        our_pathways_counts[path_element] = 1 
+    }
+}
+
+# Counting the number of modules expected in each pathway
+u_pathways = unique(md_pathways)
+exp_pathways_counts = list()
+for (path in u_pathways) {
+    mod_count = length(as.list(keggLink("module", path)))
+    exp_pathways_counts[path] = mod_count 
+}
+
+# Selecting the pathways having all their constituent modules. We remove the 'map' prefix as pathview doesn't like it
+to_draw = list()
+for (pathway in names(our_pathways_counts)) {
+    our_value = our_pathways_counts[[pathway]]
+    exp_value = exp_pathways_counts[[pathway]]
+    ratio =  our_value / exp_value
+    if (ratio == 1) {
+        nude_id =  gsub("map", "", pathway)
+        to_draw = append(to_draw, nude_id)   
+    }
+}
+
+
+# Adding the custom pathways to to_draw if not present already
+for (pathway in CUSTOM_PATHWAY_IDS){
+    if (!(pathway %in% to_draw)) {
+    to_draw = append(to_draw, pathway)
+        }
+}
+
+# printing name of the pathways to be drawn
+for (pathway in to_draw){
+    print(paste(pathway, "-->", get_pathway_info(pathway)[1]," : ",get_pathway_info(pathway)[2], sep=" "))
+}
+```
+
+Drawing maps!
+
+```{r}
+#|wwarning: false
+
+# create a figures directory
+pathway_fig_dir <- glue("{wkdir}/figures/pathways")
+dir.create(pathway_fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+suppressMessages({
+for (p in to_draw[1:10]) {
+    pathview(gene.data = ko_data,
+             species = "ko", 
+             pathway.id = p, 
+             bins=c(2, 2), 
+             both.dirs = FALSE, 
+             limit = c(1,1), 
+             mid = c("#ffffff" , "#ffffff"), 
+             high = c("#02b3ad" , "#02b3ad")
+    )
+}
+})
+
+# relocate pathview files to figure dir
+list.files(
+  glue("{wkdir}/notebooks"), pattern = "^ko", full.names =TRUE
+) %>% 
+  fs::file_move(glue("{pathway_fig_dir}/{basename(.)}"))
+
+```
+
+![](../figures/pathways/ko00010.png)
+
+![](../figures/pathways/ko00521.png)
+
+```{r}
+sessionInfo()
+```
